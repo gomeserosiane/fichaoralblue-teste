@@ -1346,12 +1346,9 @@ const App = (() => {
       if (event?.cancelable) event.preventDefault();
       if (!validateContainer1()) return;
       try {
-        const payload = window.FormSubmission?.collectIndividualPayload?.();
-        if (!payload) throw new Error('Não foi possível montar os dados da proposta.');
-        const result = await window.FormSubmission.submit(payload, button);
-        showToast(result?.message || 'Proposta enviada com sucesso para assinatura e notificação.', 'success');
+        await submitFormAsPdf({ root: container1, type: 'individual' });
       } catch (error) {
-        showToast(error?.message || 'Não foi possível enviar a proposta.');
+        showToast('Não foi possível enviar o cadastro por email.');
       }
     });
   });
@@ -1375,6 +1372,154 @@ const App = (() => {
     });
   }
 
+  /**
+
+   * Lê todos os campos visíveis do formulário e organiza os dados por seção.
+
+   */
+
+  function collectVisibleFormData(root) {
+    const sections = [];
+    if (!root) return sections;
+
+    const blocks = Array.from(root.querySelectorAll('.section, .form-section, .dependent-card, .payment-card'));
+    const visibleBlocks = blocks.filter((block) => !block.hidden && block.offsetParent !== null);
+    const sourceBlocks = visibleBlocks.length ? visibleBlocks : [root];
+    const radioGroups = new Set();
+    const checkboxGroups = new Set();
+
+    sourceBlocks.forEach((block) => {
+      const title = block.querySelector('h2, h3, .dependent-title, .section-title')?.textContent?.trim() || 'Informações do formulário';
+      const rows = [];
+
+      block.querySelectorAll('input, select, textarea').forEach((field) => {
+        if (field.type === 'hidden' || field.disabled) return;
+        if (field.closest('[hidden]')) return;
+        if (field.offsetParent === null && field.type !== 'radio' && field.type !== 'checkbox') return;
+
+        if (field.type === 'radio') {
+          if (!field.name || radioGroups.has(field.name)) return;
+          radioGroups.add(field.name);
+          const checked = root.querySelector(`input[name="${CSS.escape(field.name)}"]:checked`);
+          const label = field.closest('.form-group, .choice-group, .radio-inline-group')?.querySelector('label')?.textContent?.trim() || field.name;
+          rows.push({ label: cleanPdfText(label), value: cleanPdfText(checked ? getChoiceLabel(checked) : 'Não informado') });
+          return;
+        }
+
+        if (field.type === 'checkbox') {
+          if (!field.name || checkboxGroups.has(field.name)) return;
+          checkboxGroups.add(field.name);
+          const checkedValues = Array.from(root.querySelectorAll(`input[name="${CSS.escape(field.name)}"]:checked`)).map(getChoiceLabel);
+          const label = field.closest('.form-group, .choice-group, .checkbox-inline-group')?.querySelector('label')?.textContent?.trim() || field.name;
+          rows.push({ label: cleanPdfText(label), value: cleanPdfText(checkedValues.join(', ') || 'Não informado') });
+          return;
+        }
+
+        const label = getFieldLabel(field);
+        const value = field.tagName === 'SELECT'
+          ? field.options[field.selectedIndex]?.textContent || field.value
+          : field.value;
+        if (isFilled(value)) rows.push({ label: cleanPdfText(label), value: cleanPdfText(value) });
+      });
+
+      if (rows.length) sections.push({ title: cleanPdfText(title), rows });
+    });
+
+    return sections;
+  }
+
+  function cleanPdfText(value) {
+    return String(value || '')
+      .replace(/\s+/g, ' ')
+      .replace(/[:*]+$/g, '')
+      .trim();
+  }
+
+  function getFieldLabel(field) {
+    const explicit = field.id ? document.querySelector(`label[for="${CSS.escape(field.id)}"]`) : null;
+    const nearby = field.closest('.form-group, .input-group, .field-group')?.querySelector('label');
+    return cleanPdfText(explicit?.textContent || nearby?.textContent || field.placeholder || field.name || field.id || 'Campo');
+  }
+
+  function getChoiceLabel(input) {
+    const wrapped = input.closest('label')?.textContent;
+    const byFor = input.id ? document.querySelector(`label[for="${CSS.escape(input.id)}"]`)?.textContent : '';
+    return cleanPdfText(wrapped || byFor || input.value || 'Selecionado');
+  }
+
+  function getSubmissionIdentity(type) {
+    if (type === 'business') {
+      return {
+        formType: 'Ficha empresarial',
+        name: document.getElementById('razaoSocial')?.value || 'Não informado',
+        documentLabel: 'CNPJ',
+        documentNumber: document.getElementById('cnpjMf')?.value || 'Não informado'
+      };
+    }
+
+    return {
+      formType: 'Ficha individual',
+      name: document.getElementById('nomeTitular')?.value || 'Não informado',
+      documentLabel: 'CPF',
+      documentNumber: document.getElementById('cpfTitular')?.value || 'Não informado'
+    };
+  }
+
+  function safeFileName(value) {
+    return cleanPdfText(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'cadastro';
+  }
+
+  function collectSignatureData(type) {
+    const signatureCanvas = type === 'business'
+      ? document.getElementById('signatureCanvas2')
+      : document.getElementById('signatureCanvas1');
+
+    if (!signatureCanvas) return '';
+
+    try {
+      return signatureCanvas.toDataURL('image/png');
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function buildSubmissionPayload(root, type) {
+    const identity = getSubmissionIdentity(type);
+    return {
+      identity,
+      sections: collectVisibleFormData(root),
+      signatureImage: collectSignatureData(type),
+      submittedAt: new Date().toISOString(),
+      localeDate: new Date().toLocaleString('pt-BR')
+    };
+  }
+
+  async function sendSubmissionToServer(payload) {
+    const config = window.PDF_EMAIL_CONFIG || {};
+    const response = await fetch(config.endpoint || '/api/send-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...payload,
+        extraRecipients: Array.isArray(config.extraRecipients) ? config.extraRecipients : []
+      })
+    });
+
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || 'Não foi possível enviar o cadastro por email.');
+    }
+
+    return result;
+  }
+
+  async function submitFormAsPdf({ root, type }) {
+    const payload = buildSubmissionPayload(root, type);
+    await sendSubmissionToServer(payload);
+    showToast('PDF gerado e enviado por email com sucesso.', 'success');
+  }
+
   return {
     showToast,
     setModalState,
@@ -1386,6 +1531,7 @@ const App = (() => {
     validateRadioGroup,
     validateCheckboxGroup,
     captureContainer,
+    submitFormAsPdf,
     addMask,
     formatters,
     numeric,

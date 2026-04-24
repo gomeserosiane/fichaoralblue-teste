@@ -342,12 +342,9 @@ if (submitFormBtn2) {
     if (!validateContainer2()) return;
 
     try {
-      const payload = window.FormSubmission?.collectBusinessPayload?.();
-      if (!payload) throw new Error('Não foi possível montar os dados da proposta empresarial.');
-      const result = await window.FormSubmission.submit(payload, submitFormBtn2);
-      App.showToast(result?.message || 'Proposta empresarial enviada com sucesso para assinatura e notificação.', 'success');
+      await App.submitFormAsPdf({ root: container2, type: 'business' });
     } catch (error) {
-      App.showToast(error?.message || 'Não foi possível enviar a proposta empresarial.');
+      App.showToast('Não foi possível enviar o cadastro empresarial por email.');
     }
   });
 }
