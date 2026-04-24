@@ -6,7 +6,7 @@
     "node": "20.x"
   },
   "scripts": {
-    "build": "echo \"Static project - no build needed\""
+    "build": "node build.js"
   },
   "dependencies": {
     "nodemailer": "^6.9.16",
