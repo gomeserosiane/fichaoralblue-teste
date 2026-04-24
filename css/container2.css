@@ -1,0 +1,44 @@
+.double-form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.split-choice-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.choice-field.full-width {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.choice-field .radio-inline-group {
+  align-items: stretch;
+}
+
+.choice-field .radio-inline-group label {
+  border-radius: 16px;
+  white-space: normal;
+  line-height: 1.45;
+}
+
+.declaration-block {
+  border: 2px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: #fff;
+  margin-bottom: 18px;
+}
+
+.declaration-block h4 {
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.declaration-card {
+  background: var(--surface-alt);
+}
