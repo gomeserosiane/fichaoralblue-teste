@@ -342,9 +342,17 @@ if (submitFormBtn2) {
     if (!validateContainer2()) return;
 
     try {
-      await App.submitFormAsPdf({ root: container2, type: 'business' });
+      await App.generatePremiumPdf(container2, {
+        title: 'Ficha Empresarial / MEI',
+        filename: 'ficha-empresarial-mei.pdf',
+        headerSelector: '#container2 .header-image',
+        plusBlueSelected: !!document.getElementById('maisBlueContainer2Sim')?.checked,
+        plusBlueHeaderSelector: '#container2Form2Section img',
+        plusBlueSectionSelector: '#container2Form2Section'
+      });
+      App.showToast('PDF do formulário empresarial gerado com sucesso.', 'success');
     } catch (error) {
-      App.showToast('Não foi possível enviar o cadastro empresarial por email.');
+      App.showToast('Não foi possível gerar o PDF do formulário empresarial.');
     }
   });
 }

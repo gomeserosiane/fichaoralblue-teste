@@ -356,6 +356,293 @@ const App = (() => {
 
   /**
 
+   * Gera um PDF premium e minimalista com os dados preenchidos pelo usuario.
+
+   */
+
+  async function generatePremiumPdf(containerElement, config = {}) {
+    if (!containerElement) throw new Error('Container do formulario nao encontrado.');
+    if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('Biblioteca jsPDF nao carregada.');
+
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const margin = 16;
+    const contentWidth = pageWidth - margin * 2;
+    let y = margin;
+    const palette = { ink: [20, 32, 51], muted: [95, 111, 134], line: [219, 229, 240], soft: [248, 251, 255], brand: [37, 99, 235] };
+    const title = config.title || 'Ficha de Adesao';
+    const filename = config.filename || 'ficha-preenchida.pdf';
+    const generatedAt = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+
+    function ensureSpace(height = 20) {
+      if (y + height <= pageHeight - margin) return;
+      pdf.addPage();
+      y = margin + 8;
+    }
+
+    function drawPageChrome() {
+      pdf.setDrawColor(...palette.line);
+      pdf.setLineWidth(0.2);
+      pdf.line(margin, pageHeight - 12, pageWidth - margin, pageHeight - 12);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(8);
+      pdf.setTextColor(...palette.muted);
+      pdf.text('Documento gerado digitalmente', margin, pageHeight - 7);
+      pdf.text(String(pdf.internal.getCurrentPageInfo().pageNumber), pageWidth - margin, pageHeight - 7, { align: 'right' });
+    }
+
+    async function imageToCanvas(imgElement) {
+      if (!imgElement) return null;
+      const image = new Image();
+      image.crossOrigin = 'anonymous';
+      image.src = imgElement.currentSrc || imgElement.src;
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = reject;
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = image.naturalWidth || image.width;
+      canvas.height = image.naturalHeight || image.height;
+      canvas.getContext('2d').drawImage(image, 0, 0);
+      return canvas;
+    }
+
+    async function addWideImageFromSelector(selector, height = 50) {
+      const img = document.querySelector(selector);
+      if (!img) return;
+      const canvas = await imageToCanvas(img);
+      if (!canvas) return;
+      ensureSpace(height + 8);
+      pdf.addImage(canvas.toDataURL('image/png'), 'PNG', margin, y, contentWidth, height, undefined, 'FAST');
+      y += height + 8;
+    }
+
+    function cleanText(value) {
+      return String(value || '').replace(/\s+/g, ' ').replace(/:$/, '').trim();
+    }
+
+    function isElementVisible(el) {
+      if (!el) return false;
+      if (el.closest('[hidden]')) return false;
+      if (typeof el.getClientRects === 'function' && el.getClientRects().length === 0) return false;
+      const style = getComputedStyle(el);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    }
+
+    function cssEscape(value) {
+      if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
+      return String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+    }
+
+    function getFieldLabel(field) {
+      if (field.id) {
+        const exact = containerElement.querySelector('label[for="' + cssEscape(field.id) + '"]');
+        if (exact) return cleanText(exact.textContent);
+      }
+      const wrap = field.closest('label');
+      if (wrap) return cleanText(wrap.textContent.replace(field.value || '', ''));
+      const groupLabel = field.closest('.form-group, .whatsapp-box, .choice-group, .radio-inline-group, .checkbox-inline-group')?.querySelector('label, span');
+      return cleanText(groupLabel?.textContent || field.name || field.id || 'Campo');
+    }
+
+    function getSectionTitle(field) {
+      const section = field.closest('.dependent-card, .payment-card, section, footer');
+      const titleEl = section?.querySelector('h1, h2, h3, h4, .dependent-title');
+      return cleanText(titleEl?.textContent || 'Informacoes preenchidas');
+    }
+
+    function getRadioGroupLabel(field) {
+      const wrapper = field.closest('.form-group, .whatsapp-box, .choice-group, .radio-inline-group');
+      const label = wrapper?.querySelector('label, span');
+      return cleanText(label?.textContent || getFieldLabel(field));
+    }
+
+    function getCheckboxText(field) {
+      return cleanText(field.parentElement?.textContent || field.value || 'Selecionado');
+    }
+
+    function getFormData(options = {}) {
+      const groups = new Map();
+      const seen = new Set();
+      const scopeElement = options.includeSelector ? containerElement.querySelector(options.includeSelector) : containerElement;
+      if (!scopeElement) return [];
+      const fields = Array.from(scopeElement.querySelectorAll('input, select, textarea'));
+
+      fields.forEach((field, index) => {
+        if (options.excludeSelector && field.closest(options.excludeSelector)) return;
+        if (!isElementVisible(field)) return;
+        if (['button', 'submit', 'reset'].includes(field.type)) return;
+        if (field.closest('.signature-card')) return;
+
+        let key = field.id || field.name || field.type + '-' + index;
+        let label = getFieldLabel(field);
+        let value = '';
+
+        if (field.type === 'radio') {
+          if (!field.name || seen.has('radio:' + field.name)) return;
+          seen.add('radio:' + field.name);
+          const checked = containerElement.querySelector('input[type="radio"][name="' + cssEscape(field.name) + '"]:checked');
+          if (!checked) return;
+          key = 'radio:' + field.name;
+          label = getRadioGroupLabel(checked);
+          value = cleanText(checked.parentElement?.textContent || checked.value || 'Selecionado');
+        } else if (field.type === 'checkbox') {
+          if (!field.name || seen.has('checkbox:' + field.name)) return;
+          seen.add('checkbox:' + field.name);
+          const checkedItems = Array.from(containerElement.querySelectorAll('input[type="checkbox"][name="' + cssEscape(field.name) + '"]:checked'));
+          if (!checkedItems.length) return;
+          key = 'checkbox:' + field.name;
+          const wrapper = field.closest('.form-group, .checkbox-inline-group, .choice-group');
+          label = cleanText(wrapper?.querySelector('label, span')?.textContent || label);
+          value = checkedItems.map(getCheckboxText).join(', ');
+        } else if (field.tagName === 'SELECT') {
+          value = cleanText(field.options[field.selectedIndex]?.textContent || field.value);
+        } else if (field.type === 'date' && field.value) {
+          const [year, month, day] = field.value.split('-');
+          value = year && month && day ? day + '/' + month + '/' + year : field.value;
+        } else {
+          value = cleanText(field.value);
+        }
+
+        if (!value || seen.has(key)) return;
+        seen.add(key);
+        const sectionTitle = getSectionTitle(field);
+        if (!groups.has(sectionTitle)) groups.set(sectionTitle, []);
+        groups.get(sectionTitle).push({ label, value });
+      });
+
+      return Array.from(groups.entries()).map(([name, items]) => ({ name, items }));
+    }
+
+    function addCover() {
+      pdf.setFillColor(247, 250, 255);
+      pdf.roundedRect(margin, y, contentWidth, 24, 4, 4, 'F');
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(18);
+      pdf.setTextColor(...palette.ink);
+      pdf.text(title, margin + 5, y + 9);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(9);
+      pdf.setTextColor(...palette.muted);
+      pdf.text('Gerado em ' + generatedAt, margin + 5, y + 17);
+      y += 32;
+    }
+
+    function addSection(section) {
+      ensureSpace(18);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(12);
+      pdf.setTextColor(...palette.brand);
+      pdf.text(section.name, margin, y);
+      y += 5;
+      pdf.setDrawColor(...palette.line);
+      pdf.line(margin, y, pageWidth - margin, y);
+      y += 4;
+
+      section.items.forEach((item) => {
+        const labelLines = pdf.splitTextToSize(item.label, 54);
+        const valueLines = pdf.splitTextToSize(item.value, contentWidth - 64);
+        const rowHeight = Math.max(labelLines.length, valueLines.length) * 4.4 + 6;
+        ensureSpace(rowHeight + 2);
+        pdf.setFillColor(...palette.soft);
+        pdf.roundedRect(margin, y - 1, contentWidth, rowHeight, 2, 2, 'F');
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(8.5);
+        pdf.setTextColor(...palette.muted);
+        pdf.text(labelLines, margin + 4, y + 4);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(9.5);
+        pdf.setTextColor(...palette.ink);
+        pdf.text(valueLines, margin + 62, y + 4);
+        y += rowHeight + 2;
+      });
+      y += 4;
+    }
+
+    function addSignatureArea() {
+      ensureSpace(90);
+
+      const userSignature = typeof config.signaturePad?.toDataUrl === 'function'
+        ? config.signaturePad.toDataUrl()
+        : null;
+
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(12);
+      pdf.setTextColor(...palette.brand);
+      pdf.text('Assinaturas', margin, y);
+      y += 10;
+
+      pdf.setDrawColor(...palette.line);
+      pdf.roundedRect(margin, y, contentWidth, 72, 3, 3, 'S');
+
+      const signatureLineStart = margin + 18;
+      const signatureLineEnd = pageWidth - margin - 18;
+
+      pdf.setDrawColor(...palette.ink);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(8.5);
+      pdf.setTextColor(...palette.muted);
+
+      if (userSignature) {
+        try {
+          pdf.addImage(
+            userSignature,
+            'PNG',
+            margin + 42,
+            y + 6,
+            contentWidth - 84,
+            20
+          );
+        } catch (error) {
+          // Mantem a linha de assinatura mesmo se a imagem do canvas nao puder ser renderizada.
+        }
+      }
+
+      pdf.line(signatureLineStart, y + 30, signatureLineEnd, y + 30);
+      pdf.text('Assinatura do usuario', pageWidth / 2, y + 37, { align: 'center' });
+
+      pdf.line(signatureLineStart, y + 58, signatureLineEnd, y + 58);
+      pdf.text('Assinatura do responsavel / contratante', pageWidth / 2, y + 65, { align: 'center' });
+
+      y += 80;
+    }
+
+    await addWideImageFromSelector(config.headerSelector, 50);
+    addCover();
+
+    const oralBlueData = getFormData({ excludeSelector: config.plusBlueSectionSelector });
+    const plusBlueData = config.plusBlueSelected
+      ? getFormData({ includeSelector: config.plusBlueSectionSelector })
+      : [];
+
+    if (oralBlueData.length) oralBlueData.forEach(addSection);
+    else {
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(10);
+      pdf.setTextColor(...palette.muted);
+      pdf.text('Nenhuma informacao preenchida foi encontrada neste formulario.', margin, y);
+      y += 10;
+    }
+
+    if (config.plusBlueSelected && config.plusBlueHeaderSelector) {
+      await addWideImageFromSelector(config.plusBlueHeaderSelector, 50);
+    }
+
+    if (plusBlueData.length) plusBlueData.forEach(addSection);
+
+    addSignatureArea();
+    const totalPages = pdf.internal.getNumberOfPages();
+    for (let page = 1; page <= totalPages; page += 1) {
+      pdf.setPage(page);
+      drawPageChrome();
+    }
+    pdf.save(filename);
+  }
+
+  /**
+
    * Aplica uma máscara de formatação dinâmica enquanto o usuário digita.
 
    */
@@ -592,6 +879,11 @@ const App = (() => {
       return !hasSignature;
     }
 
+    function toDataUrl() {
+      if (!hasSignature) return null;
+      return canvas.toDataURL('image/png');
+    }
+
     canvas.addEventListener('mousedown', startDrawing);
     canvas.addEventListener('mousemove', draw);
     window.addEventListener('mouseup', stopDrawing);
@@ -612,7 +904,7 @@ const App = (() => {
 
     requestAnimationFrame(() => resizeCanvas(true));
 
-    return { canvas, box, clear, isEmpty, resize: () => resizeCanvas(true) };
+    return { canvas, box, clear, isEmpty, toDataUrl, resize: () => resizeCanvas(true) };
   }
 
 
@@ -1346,9 +1638,18 @@ const App = (() => {
       if (event?.cancelable) event.preventDefault();
       if (!validateContainer1()) return;
       try {
-        await submitFormAsPdf({ root: container1, type: 'individual' });
+        await generatePremiumPdf(container1, {
+          title: 'Ficha Individual / Familiar',
+          filename: 'ficha-individual-familiar.pdf',
+          headerSelector: '#container1 .header-image',
+          plusBlueSelected: !!document.getElementById('maisBlueContainer1Sim')?.checked,
+          plusBlueHeaderSelector: '#container1Form2Section img',
+          plusBlueSectionSelector: '#container1Form2Section',
+          signaturePad: signaturePad1
+        });
+        showToast('PDF do formulário individual gerado com sucesso.', 'success');
       } catch (error) {
-        showToast('Não foi possível enviar o cadastro por email.');
+        showToast('Não foi possível gerar o PDF do formulário.');
       }
     });
   });
@@ -1372,154 +1673,6 @@ const App = (() => {
     });
   }
 
-  /**
-
-   * Lê todos os campos visíveis do formulário e organiza os dados por seção.
-
-   */
-
-  function collectVisibleFormData(root) {
-    const sections = [];
-    if (!root) return sections;
-
-    const blocks = Array.from(root.querySelectorAll('.section, .form-section, .dependent-card, .payment-card'));
-    const visibleBlocks = blocks.filter((block) => !block.hidden && block.offsetParent !== null);
-    const sourceBlocks = visibleBlocks.length ? visibleBlocks : [root];
-    const radioGroups = new Set();
-    const checkboxGroups = new Set();
-
-    sourceBlocks.forEach((block) => {
-      const title = block.querySelector('h2, h3, .dependent-title, .section-title')?.textContent?.trim() || 'Informações do formulário';
-      const rows = [];
-
-      block.querySelectorAll('input, select, textarea').forEach((field) => {
-        if (field.type === 'hidden' || field.disabled) return;
-        if (field.closest('[hidden]')) return;
-        if (field.offsetParent === null && field.type !== 'radio' && field.type !== 'checkbox') return;
-
-        if (field.type === 'radio') {
-          if (!field.name || radioGroups.has(field.name)) return;
-          radioGroups.add(field.name);
-          const checked = root.querySelector(`input[name="${CSS.escape(field.name)}"]:checked`);
-          const label = field.closest('.form-group, .choice-group, .radio-inline-group')?.querySelector('label')?.textContent?.trim() || field.name;
-          rows.push({ label: cleanPdfText(label), value: cleanPdfText(checked ? getChoiceLabel(checked) : 'Não informado') });
-          return;
-        }
-
-        if (field.type === 'checkbox') {
-          if (!field.name || checkboxGroups.has(field.name)) return;
-          checkboxGroups.add(field.name);
-          const checkedValues = Array.from(root.querySelectorAll(`input[name="${CSS.escape(field.name)}"]:checked`)).map(getChoiceLabel);
-          const label = field.closest('.form-group, .choice-group, .checkbox-inline-group')?.querySelector('label')?.textContent?.trim() || field.name;
-          rows.push({ label: cleanPdfText(label), value: cleanPdfText(checkedValues.join(', ') || 'Não informado') });
-          return;
-        }
-
-        const label = getFieldLabel(field);
-        const value = field.tagName === 'SELECT'
-          ? field.options[field.selectedIndex]?.textContent || field.value
-          : field.value;
-        if (isFilled(value)) rows.push({ label: cleanPdfText(label), value: cleanPdfText(value) });
-      });
-
-      if (rows.length) sections.push({ title: cleanPdfText(title), rows });
-    });
-
-    return sections;
-  }
-
-  function cleanPdfText(value) {
-    return String(value || '')
-      .replace(/\s+/g, ' ')
-      .replace(/[:*]+$/g, '')
-      .trim();
-  }
-
-  function getFieldLabel(field) {
-    const explicit = field.id ? document.querySelector(`label[for="${CSS.escape(field.id)}"]`) : null;
-    const nearby = field.closest('.form-group, .input-group, .field-group')?.querySelector('label');
-    return cleanPdfText(explicit?.textContent || nearby?.textContent || field.placeholder || field.name || field.id || 'Campo');
-  }
-
-  function getChoiceLabel(input) {
-    const wrapped = input.closest('label')?.textContent;
-    const byFor = input.id ? document.querySelector(`label[for="${CSS.escape(input.id)}"]`)?.textContent : '';
-    return cleanPdfText(wrapped || byFor || input.value || 'Selecionado');
-  }
-
-  function getSubmissionIdentity(type) {
-    if (type === 'business') {
-      return {
-        formType: 'Ficha empresarial',
-        name: document.getElementById('razaoSocial')?.value || 'Não informado',
-        documentLabel: 'CNPJ',
-        documentNumber: document.getElementById('cnpjMf')?.value || 'Não informado'
-      };
-    }
-
-    return {
-      formType: 'Ficha individual',
-      name: document.getElementById('nomeTitular')?.value || 'Não informado',
-      documentLabel: 'CPF',
-      documentNumber: document.getElementById('cpfTitular')?.value || 'Não informado'
-    };
-  }
-
-  function safeFileName(value) {
-    return cleanPdfText(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'cadastro';
-  }
-
-  function collectSignatureData(type) {
-    const signatureCanvas = type === 'business'
-      ? document.getElementById('signatureCanvas2')
-      : document.getElementById('signatureCanvas1');
-
-    if (!signatureCanvas) return '';
-
-    try {
-      return signatureCanvas.toDataURL('image/png');
-    } catch (error) {
-      return '';
-    }
-  }
-
-  function buildSubmissionPayload(root, type) {
-    const identity = getSubmissionIdentity(type);
-    return {
-      identity,
-      sections: collectVisibleFormData(root),
-      signatureImage: collectSignatureData(type),
-      submittedAt: new Date().toISOString(),
-      localeDate: new Date().toLocaleString('pt-BR')
-    };
-  }
-
-  async function sendSubmissionToServer(payload) {
-    const config = window.PDF_EMAIL_CONFIG || {};
-    const response = await fetch(config.endpoint || '/api/send-email', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...payload,
-        extraRecipients: Array.isArray(config.extraRecipients) ? config.extraRecipients : []
-      })
-    });
-
-    const result = await response.json().catch(() => ({}));
-
-    if (!response.ok || !result.success) {
-      throw new Error(result.error || 'Não foi possível enviar o cadastro por email.');
-    }
-
-    return result;
-  }
-
-  async function submitFormAsPdf({ root, type }) {
-    const payload = buildSubmissionPayload(root, type);
-    await sendSubmissionToServer(payload);
-    showToast('PDF gerado e enviado por email com sucesso.', 'success');
-  }
-
   return {
     showToast,
     setModalState,
@@ -1531,7 +1684,7 @@ const App = (() => {
     validateRadioGroup,
     validateCheckboxGroup,
     captureContainer,
-    submitFormAsPdf,
+    generatePremiumPdf,
     addMask,
     formatters,
     numeric,
